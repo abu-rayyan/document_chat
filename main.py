@@ -2,7 +2,6 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from pydantic import BaseModel
 import fitz  # PyMuPDF for PDF text extraction
 import io
-import docx
 import uuid
 import time
 from sentence_transformers import SentenceTransformer
@@ -42,14 +41,6 @@ def extract_text_from_pdf(pdf_file: UploadFile):
     
     return text
 
-# Helper function to extract text from DOCX
-def extract_text_from_docx(docx_file: UploadFile):
-    doc = docx.Document(docx_file.file)
-    text = ""
-    for para in doc.paragraphs:
-        text += para.text + "\n"
-    return text
-
 def store_document(session_id: str, text: str):
     # Embed the document text
     embedding = embedding_model.encode([text])
@@ -58,7 +49,6 @@ def store_document(session_id: str, text: str):
     collection.add(
         documents=[text],
         embeddings=embedding,
-        metadatas=[{"session_id": session_id}],  # Add session_id to metadata
         ids=[session_id]  # Optionally use session_id as the document ID
     )
     
@@ -95,9 +85,7 @@ def retrieve_relevant_documents(query: str, session_id: str = None, top_k: int =
 
     # 3. Extract relevant documents
     relevant_documents = [result for result in results['documents']]
-    print ("==============================================================")
-    print ("relevant documents are:", relevant_documents)
-    print ("==============================================================")
+
 
     return relevant_documents
 
@@ -117,15 +105,6 @@ async def upload_pdf(pdf_file: UploadFile = File(...)):
     store_document(session_id, text)
     return {"session_id": session_id}
 
-@app.post("/upload_docx/")
-async def upload_docx(docx_file: UploadFile = File(...)):
-    # Generate a session ID
-    session_id = str(uuid.uuid4())
-    # Extract text from DOCX
-    text = extract_text_from_docx(docx_file)
-    # Store the document text and embeddings
-    store_document(session_id, text)
-    return {"session_id": session_id}
 
 @app.post("/query/")
 async def handle_query(query_request: QueryRequest):
@@ -143,6 +122,5 @@ async def handle_query(query_request: QueryRequest):
 
     # For simplicity, we just return the context as the "answer"
     # In practice, you would use a model like GPT-4 to generate the final answer
-    answer = f"Relevant documents: \n{context}"
-    
+    answer = f"Relevant documents: \n{context}"    
     return {"answer": answer}
