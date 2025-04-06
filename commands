@@ -1,0 +1,4 @@
+curl -v -X 'POST' \
+  'http://127.0.0.1:8000/upload_pdf/' \
+  -H 'accept: application/json' \
+  -F 'pdf_file=@doc_1.pdf'

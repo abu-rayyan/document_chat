@@ -1,9 +1,9 @@
+import uuid
+import time
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from pydantic import BaseModel
 import fitz  # PyMuPDF for PDF text extraction
 import io
-import uuid
-import time
 from sentence_transformers import SentenceTransformer
 import chromadb
 
@@ -17,14 +17,17 @@ collection = client.create_collection(collection_name)
 # Initialize the Sentence Transformer model for embeddings
 embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
+# Session timeout threshold (in seconds)
+SESSION_TIMEOUT_THRESHOLD = 3600  # 1 hour
+
 # In-memory store for documents (for filtering purposes)
-document_store = []
+document_store = {}
 
 app = FastAPI()
 
 # Pydantic model for request body
 class QueryRequest(BaseModel):
-    session_id: str  # Session ID to filter documents
+    document_id: str  # The document_id of the document to search for
     query: str  # The actual query text to search for
 
 # Helper function to extract text from PDF
@@ -41,78 +44,105 @@ def extract_text_from_pdf(pdf_file: UploadFile):
     
     return text
 
-def store_document(session_id: str, text: str):
+def store_document(text: str):
+    # Generate a unique document_id
+    document_id = str(uuid.uuid4())  # Document ID is generated via UUID
+
     # Embed the document text
     embedding = embedding_model.encode([text])
 
-    # Insert the document into Chroma collection, storing the session_id in metadata
+    # Get the current time to store as the last access time
+    last_access_time = time.time()
+
+    # Insert the document into Chroma collection, storing the document_id as the document ID
     collection.add(
         documents=[text],
         embeddings=embedding,
-        ids=[session_id]  # Optionally use session_id as the document ID
-    )
-    
-    # Also store document in an in-memory list for manual filtering
-    document_store.append({
-        "text": text,
-        "embedding": embedding[0],  # Store the first embedding in the list
-        "session_id": session_id
-    })
-
-def retrieve_relevant_documents(query: str, session_id: str = None, top_k: int = 5):
-    # Embed the query
-    query_embedding = embedding_model.encode([query])
-
-    # 1. If session_id is provided, filter documents manually by session_id before searching
-    if session_id:
-        # Filter documents in memory by session_id
-        filtered_documents = [
-            doc for doc in document_store
-            if doc['session_id'] == session_id  # Ensure the session_id matches
-        ]
-    else:
-        # If no session_id, use all documents
-        filtered_documents = document_store
-
-    # 2. Now, perform similarity search only on the filtered documents
-    filtered_embeddings = [doc['embedding'] for doc in filtered_documents]
-
-    # Perform similarity search on the filtered subset
-    results = collection.query(
-        query_embeddings=query_embedding,
-        n_results=top_k
+        ids=[document_id],  # Use document_id as the document ID
+        metadatas=[{"last_access_time": last_access_time}]  # Add last_access_time to metadata
     )
 
-    # 3. Extract relevant documents
-    relevant_documents = [result for result in results['documents']]
+    # Store document in the in-memory store for manual filtering
+    document_store[document_id] = {
+        'text': text,
+        'embedding': embedding[0],  # Store the first embedding in the list
+        'last_access_time': last_access_time  # Add last_access_time to in-memory store
+    }
 
+    return document_id
 
-    return relevant_documents
+def retrieve_relevant_documents(query: str, document_id: str, top_k: int = 5):
+    try:
+        # Step 1: Embed the query to get the query embedding
+        query_embedding = embedding_model.encode([query])
 
-# Function to delete inactive sessions (not implemented here but can be done based on payload metadata)
+        # Step 2: Check if the document_id exists in the document_store
+        if document_id not in document_store:
+            print("--------------##%^^^^^^^^^^^^^^^^&&&&&&&&&***********")
+            print ("document not found")
+            print("--------------##%^^^^^^^^^^^^^^^^&&&&&&&&&***********")
+            return {"message": f"Document with ID {document_id} does not exist."}
+
+        # Step 3: Remove all embeddings that do not belong to the given document_id
+        # This is where you remove the embeddings from Chroma collection that are not relevant to the document_id.
+        filtered_documents = [document_store[document_id]]
+        filtered_embeddings = [document_store[document_id]['embedding']]  # Only keep embeddings for the selected document_id
+
+        # Step 4: Perform the query only on the filtered embeddings in Chroma
+        results = collection.query(
+            query_embeddings=filtered_embeddings,
+            n_results=top_k
+        )
+
+        # Step 5: Return the relevant documents directly
+        return results['documents']  # Since we're already filtering by document_id, no need for additional filtering
+
+    except Exception as e:
+        # Catch any unexpected errors and return a message
+        print(f"An error occurred: {e}")
+        return {"error": "An unexpected error occurred. Please try again."}
+
+# Function to delete inactive documents directly from Chroma
 def delete_inactive_sessions():
-    # Chroma currently doesn't have built-in support for automatic deletion by inactivity.
-    # You can implement session expiration based on the `last_access_time` metadata in your application.
-    pass
+    current_time = time.time()
+
+    # Retrieve all document IDs to check their inactivity
+    all_documents = collection.get_all_documents()  # Assuming Chroma supports this method to get all docs
+    
+    to_delete = []  # List to store document_ids to be deleted
+    for doc in all_documents:
+        # Access metadata directly from Chroma collection
+        metadata = doc.get('metadata', {})
+        last_access_time = metadata.get('last_access_time', 0)
+
+        # If the document hasn't been accessed for too long, mark it for deletion
+        if current_time - last_access_time > SESSION_TIMEOUT_THRESHOLD:
+            to_delete.append(doc['id'])
+
+    # Delete inactive documents from Chroma collection
+    if to_delete:
+        # If there are documents to delete, call the delete method on Chroma
+        collection.delete(ids=to_delete)
+        print(f"Deleted {len(to_delete)} inactive documents.")
+    else:
+        print("No inactive documents to delete.")
 
 @app.post("/upload_pdf/")
 async def upload_pdf(pdf_file: UploadFile = File(...)):
-    # Generate a session ID
-    session_id = str(uuid.uuid4())
     # Extract text from PDF
     text = extract_text_from_pdf(pdf_file)
     # Store the document text and embeddings
-    store_document(session_id, text)
-    return {"session_id": session_id}
+    document_id = store_document(text)
+    return {"document_id": document_id}  # Return document_id to the client
 
 
 @app.post("/query/")
 async def handle_query(query_request: QueryRequest):
-    session_id = query_request.session_id  # Extract session_id from the body
+    document_id = query_request.document_id  # Extract document_id from the body
     query = query_request.query  # Extract the query text from the body
     
-    # Retrieve relevant documents based on the query and session_id
-    relevant_docs = retrieve_relevant_documents(query, session_id)
+    # Retrieve relevant documents based on the document_id and query
+    relevant_docs = retrieve_relevant_documents(query, document_id)
     
     if not relevant_docs:
         raise HTTPException(status_code=404, detail="No relevant documents found")
