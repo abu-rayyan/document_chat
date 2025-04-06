@@ -6,6 +6,8 @@ import fitz  # PyMuPDF for PDF text extraction
 import io
 from sentence_transformers import SentenceTransformer
 import chromadb
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 
 # Initialize Chroma client
 client = chromadb.Client()
@@ -82,35 +84,48 @@ def store_document(text: str):
 # Load document_store from Chroma at startup
 def populate_document_store():
     results = collection.get()
-    for doc, meta, id_ in zip(results["documents"], results["metadatas"], results["ids"]):
+    texts = results["documents"]
+    embeddings = embedding_model.encode(texts)
+
+    for doc, embedding, meta, id_ in zip(texts, embeddings, results["metadatas"], results["ids"]):
         document_store[id_] = {
             "text": doc,
-            "embedding": None,
+            "embedding": embedding,
             "document_id": meta.get("document_id")
         }
 
 populate_document_store()
 
-# Retrieve relevant chunks using Chroma's built-in filtering and similarity
+# Retrieve relevant chunks using manual similarity
 def retrieve_relevant_documents(query: str, document_id: str, top_k: int = 5):
     try:
-        query_embedding = embedding_model.encode([query])
+        # Step 1: Embed the query
+        query_embedding = embedding_model.encode([query])[0]
 
-        results = collection.query(
-            query_embeddings=query_embedding,
-            n_results=top_k,
-            where={"document_id": document_id}
-        )
+        # Step 2: Get only the chunks from the given document_id
+        filtered_documents = [
+            doc for doc_id, doc in document_store.items() if doc['document_id'] == document_id
+        ]
+        if not filtered_documents:
+            print ("-_--_--_--_--_--_--_--_--_--_--_--_--_--_--_--_--_--_--_--_-")
+            print ("No chunks found with this document id:", document_id)
+            print ("-_--_--_--_--_--_--_--_--_--_--_--_--_--_--_--_--_--_--_--_-")
+            return {"message": f"No chunks found for document_id {document_id}"}
 
-        top_chunks = results['documents'][0] if results['documents'] else []
+        # Step 3: Compute similarity manually
+        filtered_embeddings = [doc['embedding'] for doc in filtered_documents]
+        similarities = cosine_similarity([query_embedding], filtered_embeddings)[0]
+
+        # Step 4: Get top_k most relevant chunks
+        top_indices = np.argsort(similarities)[::-1][:top_k]
+        top_chunks = [filtered_documents[i]['text'] for i in top_indices]
 
         print ("^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^")
         print ("^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^")
-        print ("top chunks are:", top_chunks)
+        print ("top chunks are:", top_chunks )
         print ("^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^")
         print ("^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^^_^")
 
-        # Count total chunks for the given document_id
         total_chunks = sum(1 for doc in document_store.values() if doc['document_id'] == document_id)
 
         return {

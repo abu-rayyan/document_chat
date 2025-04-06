@@ -2,3 +2,9 @@ curl -v -X 'POST' \
   'http://127.0.0.1:8000/upload_pdf/' \
   -H 'accept: application/json' \
   -F 'pdf_file=@doc_1.pdf'
+
+
+
+dd6b1bdd-b37a-4de5-afe8-eda4060fbdf1
+
+5321490d-0bff-43d6-b01d-81d702d501ea
