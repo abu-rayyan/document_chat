@@ -1,0 +1,7 @@
+# Configuration for Qdrant indexing
+data_dir: ./sample_docs
+collection: finance_policy
+db_path: ./qdrant_data
+model: sentence-transformers/all-MiniLM-L6-v2
+max_tokens: 180
+overlap: 40
